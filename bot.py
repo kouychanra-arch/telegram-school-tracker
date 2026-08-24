@@ -9,8 +9,8 @@ import asyncio
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") # Telegram Chat ID របស់ Admin/អ្នកគ្រប់គ្រង
+BOT_TOKEN = os.getenv("8728776324:AAGJiZbYWaHZ1ONJd9MIV0zC7qlcrC79hfc")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID=6703552603") # Telegram Chat ID របស់ Admin/អ្នកគ្រប់គ្រង
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
