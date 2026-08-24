@@ -1,0 +1,5 @@
+.env
+__pycache__/
+tracker.db
+*.pyc
+.venv/
