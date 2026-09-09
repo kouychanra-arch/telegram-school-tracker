@@ -1,10 +1,138 @@
+import os
+import re
+import sqlite3
+import asyncio
+from datetime import datetime
+from dotenv import load_dotenv
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "8728776324:AAGWZ3MX7e2SKLEyU85OEni5P73y_00fo"
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") or "6703552603"
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+scheduler = AsyncIOScheduler()
+
+# Database Setup & Auto Migration
+def init_db():
+    conn = sqlite3.connect("tracker.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS group_activity (
+            group_id INTEGER PRIMARY KEY,
+            group_title TEXT,
+            last_active TIMESTAMP,
+            today_messages INTEGER DEFAULT 0,
+            today_photos INTEGER DEFAULT 0,
+            count_text INTEGER DEFAULT 0,
+            count_voice INTEGER DEFAULT 0,
+            count_photo INTEGER DEFAULT 0,
+            count_video INTEGER DEFAULT 0,
+            count_file INTEGER DEFAULT 0,
+            count_link INTEGER DEFAULT 0
+        )
+    """)
+    conn.commit()
+
+    # បន្ថែម columns ថ្មីដោយស្វ័យប្រវត្តិនឹង database ចាស់
+    columns_to_add = [
+        ("count_text", "INTEGER DEFAULT 0"),
+        ("count_voice", "INTEGER DEFAULT 0"),
+        ("count_photo", "INTEGER DEFAULT 0"),
+        ("count_video", "INTEGER DEFAULT 0"),
+        ("count_file", "INTEGER DEFAULT 0"),
+        ("count_link", "INTEGER DEFAULT 0")
+    ]
+    for col_name, col_type in columns_to_add:
+        try:
+            cursor.execute(f"ALTER TABLE group_activity ADD COLUMN {col_name} {col_type}")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass # បើមានរួចហើយ មិនបាច់ធ្វើអ្វីទេ
+    conn.close()
+
+# កត់ត្រាសកម្មភាពតាមប្រភេទសារ
+def log_activity(chat_id: int, title: str, msg_type: str):
+    conn = sqlite3.connect("tracker.db")
+    cursor = conn.cursor()
+    now = datetime.now()
+    
+    col = f"count_{msg_type}"
+    
+    # ពិនិត្យមើលថាតើមាន record នៅ
+    cursor.execute("SELECT group_id FROM group_activity WHERE group_id = ?", (chat_id,))
+    row = cursor.fetchone()
+    
+    if row:
+        cursor.execute(f"""
+            UPDATE group_activity 
+            SET group_title = ?, last_active = ?, today_messages = today_messages + 1, {col} = {col} + 1
+            WHERE group_id = ?
+        """, (title, now, chat_id))
+    else:
+        cursor.execute(f"""
+            INSERT INTO group_activity (group_id, group_title, last_active, today_messages, {col})
+            VALUES (?, ?, ?, 1, 1)
+        """, (chat_id, title, now))
+        
+    conn.commit()
+    conn.close()
+
+# Track Messages
+@dp.message(F.chat.type.in_({"group", "supergroup"}))
+async def track_messages(message: types.Message):
+    title = message.chat.title or "Unknown Group"
+    
+    if message.voice or message.audio:
+        log_activity(message.chat.id, title, "voice")
+    elif message.photo:
+        log_activity(message.chat.id, title, "photo")
+    elif message.video or message.video_note:
+        log_activity(message.chat.id, title, "video")
+    elif message.document:
+        log_activity(message.chat.id, title, "file")
+    else:
+        text = message.text or message.caption or ""
+        url_pattern = r'(https?://\S+|www\.\S+)'
+        if re.search(url_pattern, text):
+            log_activity(message.chat.id, title, "link")
+        else:
+            log_activity(message.chat.id, title, "text")
+
+def is_khmer(text: str) -> bool:
+    return bool(re.search(r'[\u1780-\u17FF]', text))
+
+def clean_title(title: str) -> str:
+    return title.replace("(SPS-TPR)", "").replace("SPS-TPR", "").strip()
+
+def classify_grade(title: str, is_kh: bool):
+    t_low = title.lower()
+    if is_kh:
+        if "មត្តេយ្យ" in title:
+            return "មត្តេយ្យ"
+        elif any(k in title for k in ["ទី៧", "ទី៨", "ទី៩", "ទី១០", "ទី១១", "ទី១២"]):
+            return "មធ្យម"
+        else:
+            return "បឋម"
+    else:
+        if any(k in t_low for k in ["k1", "k2", "k3", "nursery", "kindergarten"]):
+            return "Kindergarten"
+        elif any(f"level {i}" in t_low for i in range(7, 13)):
+            return "Secondary"
+        else:
+            return "Primary"
+
 def generate_report_text():
     conn = sqlite3.connect("tracker.db")
     cursor = conn.cursor()
     cursor.execute("""
         SELECT group_title, last_active, count_text, count_voice, 
-               count_photo, count_video, count_file, count_link 
-        FROM group_detailed_activity
+               count_photo, count_video, count_file, count_link, today_messages 
+        FROM group_activity
     """)
     rows = cursor.fetchall()
     conn.close()
@@ -21,37 +149,24 @@ def generate_report_text():
     if not rows:
         return greeting_header + "⚠️ <i>មិនទាន់មានទិន្នន័យសកម្មភាពក្នុងប្រព័ន្ធនៅឡើយទេ។</i>"
 
-    # Container សម្រាប់បែងចែកទិន្នន័យ
-    # កម្រិតខ្មែរ: មត្តេយ្យ, បឋម, អនុវិទ្យាល័យ/វិទ្យាល័យ
     kh_groups = {"មត្តេយ្យ": [], "បឋម": [], "មធ្យម": []}
-    # កម្រិតអង់គ្លេស: Nursery/Kindergarten (K), Primary (Level 1-6), Secondary (Level 7-12)
     en_groups = {"Kindergarten": [], "Primary": [], "Secondary": []}
-
-    kh_inactive = []
-    en_inactive = []
-
-    # Function សម្គាល់កម្រិតថ្នាក់
-    def classify_grade(title: str, is_kh: bool):
-        t_low = title.lower()
-        if is_kh:
-            if "មត្តេយ្យ" in title:
-                return "មត្តេយ្យ"
-            elif any(k in title for k in ["ទី៧", "ទី៨", "ទី៩", "ទី១០", "ទី១១", "ទី១២"]):
-                return "មធ្យម"
-            else:
-                return "បឋម"
-        else:
-            if any(k in t_low for k in ["k1", "k2", "k3", "nursery", "kindergarten"]):
-                return "Kindergarten"
-            elif any(f"level {i}" in t_low for i in range(7, 13)):
-                return "Secondary"
-            else:
-                return "Primary"
+    kh_inactive, en_inactive = [], []
 
     tot_text = tot_voice = tot_photo = tot_video = tot_file = tot_link = 0
 
-    for title, last_active_str, c_text, c_voice, c_photo, c_video, c_file, c_link in rows:
+    for row in rows:
+        title = row[0]
+        last_active_str = row[1]
+        c_text, c_voice, c_photo, c_video, c_file, c_link = (row[2] or 0), (row[3] or 0), (row[4] or 0), (row[5] or 0), (row[6] or 0), (row[7] or 0)
+        today_m = row[8] or 0
+        
         subtotal = c_text + c_voice + c_photo + c_video + c_file + c_link
+        # ប្រសិនជា column ថ្មីទើបតែបន្ថែម ហើយមានសារក្នុង today_messages ចាស់
+        if subtotal == 0 and today_m > 0:
+            subtotal = today_m
+            c_text = today_m
+
         tot_text += c_text
         tot_voice += c_voice
         tot_photo += c_photo
@@ -68,8 +183,7 @@ def generate_report_text():
             "title": cleaned,
             "subtotal": subtotal,
             "text": c_text, "voice": c_voice, "photo": c_photo,
-            "video": c_video, "file": c_file, "link": c_link,
-            "last_active": last_active
+            "video": c_video, "file": c_file, "link": c_link
         }
 
         if subtotal > 0:
@@ -86,16 +200,14 @@ def generate_report_text():
 
     total_all_msg = tot_text + tot_voice + tot_photo + tot_video + tot_file + tot_link
 
-    # Helper គណនាសរុបតាម Level
     def summarize_level(items):
         return {
-            "active_classes": len(items),
+            "classes": len(items),
             "messages": sum(x["subtotal"] for x in items),
             "photos": sum(x["photo"] for x in items),
             "voices": sum(x["voice"] for x in items)
         }
 
-    # Dashboard សង្ខេបជារួម
     report = greeting_header
     report += "📊 <b>ស្ថិតិទូទៅប្រចាំថ្ងៃ (DASHBOARD)</b>\n"
     report += "━━━━━━━━━━━━━━━━━━\n"
@@ -105,31 +217,24 @@ def generate_report_text():
         f"  └ 🎬Video: {tot_video} | 📁File: {tot_file} | 🔗Link: {tot_link}\n\n"
     )
 
-    # តារាងសង្ខេបតាមកម្រិតសិក្សា
     report += "📑 <b>សង្ខេបស្ថិតិតាមកម្រិតសិក្សានីមួយៗ</b>\n"
     report += "─────────────────\n"
-    
-    # សង្ខេបខ្មែរ
     report += "🇰🇭 <u>កម្មវិធីចំណេះទូទៅខ្មែរ:</u>\n"
     for lvl in ["មត្តេយ្យ", "បឋម", "មធ្យម"]:
         s = summarize_level(kh_groups[lvl])
-        report += f" • <b>{lvl}:</b> {s['active_classes']} ថ្នាក់សកម្ម | {s['messages']} សារ (🖼 {s['photos']} | 🎙 {s['voices']})\n"
+        report += f" • <b>{lvl}:</b> {s['classes']} ថ្នាក់ | {s['messages']} សារ (🖼 {s['photos']} | 🎙 {s['voices']})\n"
 
-    # សង្ខេបអង់គ្លេស
     report += "\n🇬🇧 <u>កម្មវិធីភាសាអង់គ្លេសទូទៅ:</u>\n"
-    for lvl, name in [("Kindergarten", "ថ្នាក់ K (មត្តេយ្យ)"), ("Primary", "កម្រិតបឋម (L1-6)"), ("Secondary", "កម្រិតមធ្យម (L7-12)")]:
+    for lvl, name in [("Kindergarten", "មត្តេយ្យ (K)"), ("Primary", "បឋម (L1-6)"), ("Secondary", "មធ្យម (L7-12)")]:
         s = summarize_level(en_groups[lvl])
-        report += f" • <b>{name}:</b> {s['active_classes']} ថ្នាក់សកម្ម | {s['messages']} សារ (🖼 {s['photos']} | 🎙 {s['voices']})\n"
+        report += f" • <b>{name}:</b> {s['classes']} ថ្នាក់ | {s['messages']} សារ (🖼 {s['photos']} | 🎙 {s['voices']})\n"
 
     report += "━━━━━━━━━━━━━━━━━━\n\n"
 
-    # បង្ហាញបញ្ជីថ្នាក់រៀនលម្អិត
     # ១. កម្មវិធីខ្មែរ
     report += "🇰🇭 <b>១. បញ្ជីថ្នាក់លម្អិត - ចំណេះទូទៅខ្មែរ</b>\n"
-    has_kh_active = False
     for lvl in ["មត្តេយ្យ", "បឋម", "មធ្យម"]:
         if kh_groups[lvl]:
-            has_kh_active = True
             report += f"\n🔹 <b>កម្រិត{lvl}:</b>\n"
             kh_groups[lvl].sort(key=lambda x: x["subtotal"], reverse=True)
             for x in kh_groups[lvl]:
@@ -137,9 +242,6 @@ def generate_report_text():
                     f"• <b>{x['title']}</b>: {x['subtotal']} សារ\n"
                     f"  └ 💬:{x['text']} 🎙:{x['voice']} 🖼:{x['photo']} 🎬:{x['video']} 📁:{x['file']} 🔗:{x['link']}\n"
                 )
-    if not has_kh_active:
-        report += "• <i>គ្មានសកម្មភាព</i>\n"
-
     if kh_inactive:
         report += "\n⚠️ <u>ថ្នាក់អសកម្ម (ថ្ងៃនេះ):</u>\n" + "\n".join(kh_inactive) + "\n"
 
@@ -147,10 +249,8 @@ def generate_report_text():
 
     # ២. កម្មវិធីអង់គ្លេស
     report += "🇬🇧 <b>២. បញ្ជីថ្នាក់លម្អិត - ភាសាអង់គ្លេសទូទៅ</b>\n"
-    has_en_active = False
     for lvl, label in [("Kindergarten", "កម្រិត Kindergarten"), ("Primary", "កម្រិត Primary"), ("Secondary", "កម្រិត Secondary")]:
         if en_groups[lvl]:
-            has_en_active = True
             report += f"\n🔹 <b>{label}:</b>\n"
             en_groups[lvl].sort(key=lambda x: x["subtotal"], reverse=True)
             for x in en_groups[lvl]:
@@ -158,10 +258,55 @@ def generate_report_text():
                     f"• <b>{x['title']}</b>: {x['subtotal']} សារ\n"
                     f"  └ 💬:{x['text']} 🎙:{x['voice']} 🖼:{x['photo']} 🎬:{x['video']} 📁:{x['file']} 🔗:{x['link']}\n"
                 )
-    if not has_en_active:
-        report += "• <i>គ្មានសកម្មភាព</i>\n"
-
     if en_inactive:
         report += "\n⚠️ <u>ថ្នាក់អសកម្ម (ថ្ងៃនេះ):</u>\n" + "\n".join(en_inactive) + "\n"
 
     return report
+
+# Function ជួយពុះសារវែងៗកុំឱ្យ Error Telegram Limit 4096 chars
+async def send_safely(chat_id, text):
+    if len(text) <= 4000:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+    else:
+        parts = text.split("══════════════════════")
+        for part in parts:
+            if part.strip():
+                await bot.send_message(chat_id=chat_id, text=part.strip(), parse_mode="HTML")
+                await asyncio.sleep(0.5)
+
+async def send_daily_report():
+    if ADMIN_CHAT_ID:
+        report = generate_report_text()
+        await send_safely(ADMIN_CHAT_ID, report)
+        
+        conn = sqlite3.connect("tracker.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE group_activity 
+            SET today_messages = 0, today_photos = 0,
+                count_text = 0, count_voice = 0, count_photo = 0, 
+                count_video = 0, count_file = 0, count_link = 0
+        """)
+        conn.commit()
+        conn.close()
+
+@dp.message(Command("report"))
+async def manual_report(message: types.Message):
+    try:
+        report = generate_report_text()
+        await send_safely(message.chat.id, report)
+    except Exception as e:
+        await message.answer(f"⚠️ កើតមានបញ្ហា៖ {str(e)}")
+
+@dp.message(Command("start"))
+async def start_cmd(message: types.Message):
+    await message.answer("គោរពជម្រាបសួរលោកនាយក! Bot តាមដានសកម្មភាពថ្នាក់រៀនកំពុងដំណើរការធម្មតា។ វាយ /report ដើម្បីពិនិត្យរបាយការណ៍។")
+
+async def main():
+    init_db()
+    scheduler.add_job(send_daily_report, 'cron', hour=17, minute=30)
+    scheduler.start()
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
