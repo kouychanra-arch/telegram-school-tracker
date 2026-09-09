@@ -13,7 +13,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "8728776324:AAGWZ3MX7e2SKLEyU85OEni5P73y_00fo"
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") or "6703552603"
 
-bot = Bot(token=BOT_TOKEN))
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 
