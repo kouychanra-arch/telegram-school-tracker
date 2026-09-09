@@ -9,10 +9,11 @@ import asyncio
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("8728776324:AAGJiZbYWaHZ1ONJd9MIV0zC7qlcrC79hfc")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID=6703552603") # Telegram Chat ID របស់ Admin/អ្នកគ្រប់គ្រង
+# ដាក់ Token ពិតប្រាកដរបស់អ្នកជា Default បើសិនជា Railway រក Environment Variable មិនឃើញ
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "8728776324:AAGWZ3MX7e2SKLEyU85OEni5P73y_00fo"
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") or "6703552603"
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(token=BOT_TOKEN))
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 
