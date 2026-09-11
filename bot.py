@@ -83,12 +83,8 @@ def log_activity(chat_id: int, title: str, msg_type: str):
     conn.commit()
     conn.close()
 
-# Handler ចាប់សារគ្រប់ប្រភេទក្នុង Group
-@dp.message()
+@dp.message(F.chat.type.in_({"group", "supergroup"}))
 async def track_messages(message: types.Message):
-    # មិនចាប់សារក្នុង Chat ផ្ទាល់ខ្លួនឡើយ
-    if message.chat.type not in ["group", "supergroup"]:
-        return
 
     title = message.chat.title or "Unknown Group"
 
