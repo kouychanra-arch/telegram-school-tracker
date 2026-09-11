@@ -17,7 +17,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 
-# Database Setup & Auto Migration
+# Setup Database & Auto-Migration
 def init_db():
     conn = sqlite3.connect("tracker.db")
     cursor = conn.cursor()
@@ -25,7 +25,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS group_activity (
             group_id INTEGER PRIMARY KEY,
             group_title TEXT,
-            last_active TIMESTAMP,
+            last_active TEXT,
             today_messages INTEGER DEFAULT 0,
             today_photos INTEGER DEFAULT 0,
             count_text INTEGER DEFAULT 0,
@@ -38,7 +38,7 @@ def init_db():
     """)
     conn.commit()
 
-    # បន្ថែម columns ថ្មីដោយស្វ័យប្រវត្តិនឹង database ចាស់
+    # បន្ថែម columns ស្វ័យប្រវត្តិប្រសិនបើជា database ចាស់
     columns_to_add = [
         ("count_text", "INTEGER DEFAULT 0"),
         ("count_voice", "INTEGER DEFAULT 0"),
@@ -52,56 +52,64 @@ def init_db():
             cursor.execute(f"ALTER TABLE group_activity ADD COLUMN {col_name} {col_type}")
             conn.commit()
         except sqlite3.OperationalError:
-            pass # បើមានរួចហើយ មិនបាច់ធ្វើអ្វីទេ
+            pass
     conn.close()
 
-# កត់ត្រាសកម្មភាពតាមប្រភេទសារ
+# កត់ត្រាសកម្មភាពចូល Database
 def log_activity(chat_id: int, title: str, msg_type: str):
     conn = sqlite3.connect("tracker.db")
     cursor = conn.cursor()
-    now = datetime.now()
-    
+    now_str = datetime.now().isoformat()
     col = f"count_{msg_type}"
-    
-    # ពិនិត្យមើលថាតើមាន record នៅ
+
     cursor.execute("SELECT group_id FROM group_activity WHERE group_id = ?", (chat_id,))
     row = cursor.fetchone()
-    
+
     if row:
         cursor.execute(f"""
             UPDATE group_activity 
-            SET group_title = ?, last_active = ?, today_messages = today_messages + 1, {col} = {col} + 1
+            SET group_title = ?, 
+                last_active = ?, 
+                today_messages = COALESCE(today_messages, 0) + 1, 
+                {col} = COALESCE({col}, 0) + 1
             WHERE group_id = ?
-        """, (title, now, chat_id))
+        """, (title, now_str, chat_id))
     else:
         cursor.execute(f"""
             INSERT INTO group_activity (group_id, group_title, last_active, today_messages, {col})
             VALUES (?, ?, ?, 1, 1)
-        """, (chat_id, title, now))
-        
+        """, (chat_id, title, now_str))
+
     conn.commit()
     conn.close()
 
-# Track Messages
-@dp.message(F.chat.type.in_({"group", "supergroup"}))
+# Handler ចាប់សារគ្រប់ប្រភេទក្នុង Group
+@dp.message()
 async def track_messages(message: types.Message):
+    # មិនចាប់សារក្នុង Chat ផ្ទាល់ខ្លួនឡើយ
+    if message.chat.type not in ["group", "supergroup"]:
+        return
+
     title = message.chat.title or "Unknown Group"
-    
-    if message.voice or message.audio:
-        log_activity(message.chat.id, title, "voice")
-    elif message.photo:
-        log_activity(message.chat.id, title, "photo")
-    elif message.video or message.video_note:
-        log_activity(message.chat.id, title, "video")
-    elif message.document:
-        log_activity(message.chat.id, title, "file")
-    else:
-        text = message.text or message.caption or ""
-        url_pattern = r'(https?://\S+|www\.\S+)'
-        if re.search(url_pattern, text):
-            log_activity(message.chat.id, title, "link")
+
+    try:
+        if message.voice or message.audio:
+            log_activity(message.chat.id, title, "voice")
+        elif message.photo:
+            log_activity(message.chat.id, title, "photo")
+        elif message.video or message.video_note or message.animation:
+            log_activity(message.chat.id, title, "video")
+        elif message.document:
+            log_activity(message.chat.id, title, "file")
         else:
-            log_activity(message.chat.id, title, "text")
+            text = message.text or message.caption or ""
+            url_pattern = r'(https?://\S+|www\.\S+)'
+            if re.search(url_pattern, text):
+                log_activity(message.chat.id, title, "link")
+            else:
+                log_activity(message.chat.id, title, "text")
+    except Exception as e:
+        print(f"Error logging message: {e}")
 
 def is_khmer(text: str) -> bool:
     return bool(re.search(r'[\u1780-\u17FF]', text))
@@ -158,11 +166,15 @@ def generate_report_text():
     for row in rows:
         title = row[0]
         last_active_str = row[1]
-        c_text, c_voice, c_photo, c_video, c_file, c_link = (row[2] or 0), (row[3] or 0), (row[4] or 0), (row[5] or 0), (row[6] or 0), (row[7] or 0)
+        c_text = row[2] or 0
+        c_voice = row[3] or 0
+        c_photo = row[4] or 0
+        c_video = row[5] or 0
+        c_file = row[6] or 0
+        c_link = row[7] or 0
         today_m = row[8] or 0
-        
+
         subtotal = c_text + c_voice + c_photo + c_video + c_file + c_link
-        # ប្រសិនជា column ថ្មីទើបតែបន្ថែម ហើយមានសារក្នុង today_messages ចាស់
         if subtotal == 0 and today_m > 0:
             subtotal = today_m
             c_text = today_m
@@ -174,7 +186,12 @@ def generate_report_text():
         tot_file += c_file
         tot_link += c_link
 
-        last_active = datetime.fromisoformat(last_active_str)
+        try:
+            last_active = datetime.fromisoformat(last_active_str)
+            last_active_display = last_active.strftime('%d/%m %H:%M')
+        except Exception:
+            last_active_display = str(last_active_str)
+
         cleaned = clean_title(title)
         is_kh = is_khmer(title)
         grade = classify_grade(cleaned, is_kh)
@@ -192,7 +209,7 @@ def generate_report_text():
             else:
                 en_groups[grade].append(item_data)
         else:
-            inactive_str = f"• {cleaned} <i>(ចុងក្រោយ: {last_active.strftime('%d/%m %H:%M')})</i>"
+            inactive_str = f"• {cleaned} <i>(ចុងក្រោយ: {last_active_display})</i>"
             if is_kh:
                 kh_inactive.append(inactive_str)
             else:
@@ -263,7 +280,7 @@ def generate_report_text():
 
     return report
 
-# Function ជួយពុះសារវែងៗកុំឱ្យ Error Telegram Limit 4096 chars
+# Function ពុះសារវែងៗកុំឱ្យ Error 4096 Limit
 async def send_safely(chat_id, text):
     if len(text) <= 4000:
         await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
@@ -274,11 +291,13 @@ async def send_safely(chat_id, text):
                 await bot.send_message(chat_id=chat_id, text=part.strip(), parse_mode="HTML")
                 await asyncio.sleep(0.5)
 
+# Function ផ្ញើរបាយការណ៍ស្វ័យប្រវត្តិតាមពេលកំណត់
 async def send_daily_report():
     if ADMIN_CHAT_ID:
         report = generate_report_text()
         await send_safely(ADMIN_CHAT_ID, report)
         
+        # Reset ការរាប់ប្រចាំថ្ងៃ
         conn = sqlite3.connect("tracker.db")
         cursor = conn.cursor()
         cursor.execute("""
@@ -290,6 +309,7 @@ async def send_daily_report():
         conn.commit()
         conn.close()
 
+# Commands សម្រាប់ Admin
 @dp.message(Command("report"))
 async def manual_report(message: types.Message):
     try:
@@ -304,6 +324,7 @@ async def start_cmd(message: types.Message):
 
 async def main():
     init_db()
+    # កំណត់ផ្ញើស្វ័យប្រវត្តិម៉ោង ១០:០០ យប់ (ម៉ោងនៅភ្នំពេញ)
     scheduler.add_job(send_daily_report, 'cron', hour=22, minute=0, timezone='Asia/Phnom_Penh')
     scheduler.start()
     await dp.start_polling(bot)
