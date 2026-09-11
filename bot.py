@@ -304,7 +304,7 @@ async def start_cmd(message: types.Message):
 
 async def main():
     init_db()
-    scheduler.add_job(send_daily_report, 'cron', hour=17, minute=30)
+    scheduler.add_job(send_daily_report, 'cron', hour=22, minute=0, timezone='Asia/Phnom_Penh')
     scheduler.start()
     await dp.start_polling(bot)
 
